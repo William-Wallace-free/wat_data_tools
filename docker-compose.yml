@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  wat_mysql:
+    image: mysql:8.0
+    container_name: wat_mysql_server
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root_secure_password
+      MYSQL_DATABASE: wat_db
+      MYSQL_USER: wat_user
+      MYSQL_PASSWORD: wat_password
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - wat_mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./my.cnf:/etc/mysql/conf.d/custom.cnf
+    command: --default-authentication-plugin=mysql_native_password
+
+volumes:
+  wat_mysql_data:
