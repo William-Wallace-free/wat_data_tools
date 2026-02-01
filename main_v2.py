@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, QMessageB
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from sqlalchemy import create_engine, inspect
+import pandas as pd
 
 from src.core.settings import settings
 from src.ui.dialogs.db_setup import DbSetupDialog
@@ -74,18 +75,17 @@ class MainWindow(QMainWindow):
         top_layout.setContentsMargins(0, 0, 0, 0)
         
         self.filter_bar = AdvancedFilterBar()
-        # [修改] 连接新的多选信号
         self.filter_bar.params_changed.connect(self.on_params_selection_changed)
         top_layout.addWidget(self.filter_bar)
 
         ctrl_layout = QHBoxLayout()
         self.chart_type_combo = QComboBox()
         self.chart_type_combo.addItems(["Wafer Map", "Histogram", "Box Plot", "Line Chart"])
-        self.chart_type_combo.currentIndexChanged.connect(self.refresh_batch_plot) # 类型变了也刷新
+        self.chart_type_combo.currentIndexChanged.connect(self.refresh_batch_plot) 
         
         self.line_style_combo = QComboBox()
         self.line_style_combo.addItems(["Lollipop", "Standard", "Step", "Area"])
-        self.line_style_combo.currentIndexChanged.connect(self.refresh_batch_plot) # 样式变了也刷新
+        self.line_style_combo.currentIndexChanged.connect(self.refresh_batch_plot) 
 
         ctrl_layout.addWidget(QLabel("Chart Type:"))
         ctrl_layout.addWidget(self.chart_type_combo)
@@ -132,13 +132,11 @@ class MainWindow(QMainWindow):
         df = self.repo.get_wafer_test_structure(lot_id, wafer_id)
         if not df.empty:
             self.filter_bar.load_data(df)
-            # 清空之前的图，等待用户重新勾选
             self.plot_manager.reset_data()
     
-    # [核心] 处理多选逻辑
     def on_params_selection_changed(self, selected_params):
         """当用户勾选了多个参数时，自动批量重绘"""
-        self.current_selected_params = selected_params # 存下来备用
+        self.current_selected_params = selected_params 
         self.refresh_batch_plot()
 
     def refresh_batch_plot(self):
@@ -152,21 +150,41 @@ class MainWindow(QMainWindow):
         chart_type = self.chart_type_combo.currentText()
         line_style = self.line_style_combo.currentText()
         
-        # 准备批量数据
-        batch_data = []
+        # 获取用于查找元数据的完整 DataFrame (来自 FilterBar)
+        structure_df = self.filter_bar.full_df
         
-        # 遍历所有被勾选的参数
+        batch_data = []
         for param in self.current_selected_params:
+            # 1. 获取绘图数据 (X, Y, Value)
             df = self.repo.get_wafer_map_data(self.current_lot_id, self.current_wafer_id, param)
+            
             if not df.empty:
+                # 2. [核心修改] 查找该 Parameter 对应的原始元数据 (Module, Device...)
+                # structure_df 中应该有一行对应的 parameter == param
+                meta_dict = {}
+                if not structure_df.empty and 'param_name' in structure_df.columns:
+                    # 查找对应的行
+                    row_mask = structure_df['param_name'] == param
+                    if row_mask.any():
+                        row = structure_df[row_mask].iloc[0]
+                        
+                        # 提取指定的字段 (确保列名与数据库/CSV一致)
+                        meta_dict = {
+                            'module': row.get('module', '-'),
+                            'device': row.get('device_name', '-'),
+                            'algo': row.get('algo_name', '-'),
+                            'input': row.get('input_params', '-'),
+                            'terminal': row.get('terminals', '-')
+                        }
+
                 batch_data.append({
                     'df': df,
                     'title': f"{param}",
+                    'meta_dict': meta_dict, # 传入元数据字典
                     'chart_type': chart_type,
                     'line_style': line_style
                 })
         
-        # 发送给管理器进行布局和绘制
         if batch_data:
             self.plot_manager.plot_batch(batch_data)
             self.statusBar().showMessage(f"Plotted {len(batch_data)} charts.")

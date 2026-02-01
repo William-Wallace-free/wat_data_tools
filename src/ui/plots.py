@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, 
                                QTabWidget, QPushButton, QSpinBox, QLabel, 
                                QScrollArea, QSizePolicy, QMenu, QMessageBox, 
-                               QSplitter, QDoubleSpinBox, QGroupBox)
+                               QSplitter, QDoubleSpinBox, QGroupBox, QFrame, QFormLayout)
 from PySide6.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -33,17 +33,60 @@ class SinglePlotWidget(QWidget):
         self.canvas = FigureCanvas(self.figure)
         chart_layout.addWidget(self.canvas)
         
-        # === Right: Stats ===
+        # === Right: Container (Stats + Meta Info) ===
+        self.right_container = QWidget()
+        # [方案二核心] 强制限制右侧面板最大宽度，防止挤压图表
+        self.right_container.setMaximumWidth(220)
+        self.right_container.setMinimumWidth(180)
+        
+        self.right_layout = QVBoxLayout(self.right_container)
+        self.right_layout.setContentsMargins(5, 5, 5, 5)
+        self.right_layout.setSpacing(10)
+        
+        # 1. 统计表格
         self.stats_table = CompactStatsTable()
-        # [关键优化] 设置最小宽度，保证至少能显示出数字
-        self.stats_table.setMinimumWidth(180) 
+        self.stats_table.setMinimumWidth(150)
+        self.stats_table.setFixedHeight(150) 
+        self.right_layout.addWidget(self.stats_table)
+        
+        # 2. 元数据信息区域 (Key-Value Pairs)
+        self.meta_group = QGroupBox("Parameter Info")
+        self.meta_layout = QFormLayout(self.meta_group)
+        self.meta_layout.setContentsMargins(2, 5, 2, 5)
+        self.meta_layout.setSpacing(5)
+        # 允许 Label 在需要时稍微伸展，但主要靠截断控制
+        self.meta_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        
+        # 创建 5 个固定的 Label
+        self.lbl_module = QLabel("-")
+        self.lbl_device = QLabel("-")
+        self.lbl_algo = QLabel("-")
+        self.lbl_input = QLabel("-")
+        self.lbl_terminal = QLabel("-")
+        
+        # 设置基础样式
+        for lbl in [self.lbl_module, self.lbl_device, self.lbl_algo, self.lbl_input, self.lbl_terminal]:
+            lbl.setStyleSheet("color: #333; font-weight: bold; font-size: 10px;")
+            # 不需要 WordWrap，因为我们手动截断了
+            lbl.setWordWrap(False) 
+
+        # 使用缩写的 Label 以节省空间
+        self.meta_layout.addRow("Mod:", self.lbl_module)
+        self.meta_layout.addRow("Dev:", self.lbl_device)
+        self.meta_layout.addRow("Algo:", self.lbl_algo)
+        self.meta_layout.addRow("Inp:", self.lbl_input)
+        self.meta_layout.addRow("Term:", self.lbl_terminal)
+        
+        self.right_layout.addWidget(self.meta_group)
+        self.right_layout.addStretch() # 底部弹簧
         
         self.splitter.addWidget(self.chart_container)
-        self.splitter.addWidget(self.stats_table)
+        self.splitter.addWidget(self.right_container)
         
-        # [关键优化] 调整比例 6:4，表格更宽
-        self.splitter.setStretchFactor(0, 6)
-        self.splitter.setStretchFactor(1, 4)
+        # 调整 Splitter 比例：左侧尽可能大 (Stretch=1)，右侧固定 (Stretch=0)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setCollapsible(1, False) # 右侧禁止折叠到消失
         
         self.ax = None
         self.current_df = pd.DataFrame()
@@ -53,7 +96,7 @@ class SinglePlotWidget(QWidget):
         self.current_k = 3.0
         self.current_dev = 0.1
 
-    def plot(self, df: pd.DataFrame, chart_type="Wafer Map", title="", line_style="Lollipop", k_val=3.0, dev_val=0.1):
+    def plot(self, df: pd.DataFrame, chart_type="Wafer Map", title="", meta_dict=None, line_style="Lollipop", k_val=3.0, dev_val=0.1):
         self.current_df = df.copy()
         if '_idx_' not in self.current_df.columns:
             self.current_df['_idx_'] = range(len(self.current_df))
@@ -64,8 +107,35 @@ class SinglePlotWidget(QWidget):
         self.current_k = k_val
         self.current_dev = dev_val
         
+        # 更新下方信息
+        self._update_meta_info(meta_dict)
+        
         self._draw_chart()
         self._recalc_stats()
+
+    def _update_meta_info(self, meta_dict):
+        if not meta_dict:
+            meta_dict = {}
+
+        # [方案二核心] 智能截断 + Tooltip 辅助函数
+        def _set_smart_text(label, text):
+            full_text = str(text) if text is not None else "-"
+            # 总是设置完整文本到 Tooltip，鼠标放上去就能看到全貌
+            label.setToolTip(full_text)
+            
+            # 截断逻辑：如果超过 18 个字符，保留前 15 个并加 "..."
+            threshold = 18
+            if len(full_text) > threshold:
+                short_text = full_text[:15] + "..."
+                label.setText(short_text)
+            else:
+                label.setText(full_text)
+
+        _set_smart_text(self.lbl_module, meta_dict.get('module', '-'))
+        _set_smart_text(self.lbl_device, meta_dict.get('device', '-'))
+        _set_smart_text(self.lbl_algo, meta_dict.get('algo', '-'))
+        _set_smart_text(self.lbl_input, meta_dict.get('input', '-'))
+        _set_smart_text(self.lbl_terminal, meta_dict.get('terminal', '-'))
 
     def update_global_params(self, k_val, dev_val):
         self.current_k = k_val
@@ -81,6 +151,8 @@ class SinglePlotWidget(QWidget):
     def _draw_chart(self):
         self.figure.clear()
         self.ax = self.figure.add_subplot(111)
+        # 调整边距，确保图表利用率最大化
+        self.figure.subplots_adjust(top=0.9, bottom=0.15, left=0.12, right=0.95)
         
         if self.current_df.empty:
             self.ax.text(0.5, 0.5, "No Data", ha='center', va='center')
@@ -102,7 +174,7 @@ class SinglePlotWidget(QWidget):
             if self.chart_type != "Wafer Map":
                 self.ax.grid(True, linestyle='--', alpha=0.5)
             
-            self.figure.tight_layout()
+            self.ax.set_title(self.title, fontsize=10, fontweight='bold')
             self.canvas.draw()
         except Exception as e:
             print(f"Plot Error: {e}")
@@ -123,7 +195,6 @@ class SinglePlotWidget(QWidget):
         self.ax.set_xlim(x.min()-1, x.max()+1)
         self.ax.set_ylim(y.min()-1, y.max()+1)
         self.ax.set_aspect('equal')
-        self.ax.set_title(self.title, fontsize=9)
         self.ax.tick_params(labelsize=7)
 
     def _plot_line(self, df):
@@ -144,19 +215,16 @@ class SinglePlotWidget(QWidget):
         else:
             self.ax.plot(x_data, y_data, color=color, marker='o', ms=3, lw=1)
             
-        self.ax.set_title(self.title, fontsize=9)
         self.ax.tick_params(labelsize=7)
         if len(df) > 50: self.ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=5))
         else: self.ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     def _plot_histogram(self, values):
         self.ax.hist(values, bins=30, color='skyblue', edgecolor='black')
-        self.ax.set_title(self.title, fontsize=9)
         self.ax.tick_params(labelsize=7)
 
     def _plot_box(self, values):
         self.ax.boxplot(values, vert=True, patch_artist=True)
-        self.ax.set_title(self.title, fontsize=9)
         self.ax.tick_params(labelsize=7)
 
 
@@ -180,13 +248,13 @@ class PlotGridPage(QWidget):
         self.scroll.setWidget(self.content_widget)
         self.main_layout.addWidget(self.scroll)
 
-    def add_plot(self, df, chart_type, title, line_style, k_val, dev_val):
+    def add_plot(self, df, chart_type, title, meta_dict, line_style, k_val, dev_val):
         if self.next_idx >= self.rows * self.cols: return False 
         r = self.next_idx // self.cols
         c = self.next_idx % self.cols
         
         plot_widget = SinglePlotWidget()
-        plot_widget.plot(df, chart_type, title, line_style, k_val, dev_val)
+        plot_widget.plot(df, chart_type, title, meta_dict, line_style, k_val, dev_val)
         
         self.grid_layout.addWidget(plot_widget, r, c)
         self.plots.append(plot_widget)
@@ -312,8 +380,10 @@ class MultiPagePlotManager(QWidget):
         k, dev = self.get_current_params()
         
         for data in plot_data_list:
+            meta = data.get('meta_dict', {})
+            
             success = current_page.add_plot(
-                data['df'], data['chart_type'], data['title'], 
+                data['df'], data['chart_type'], data['title'], meta,
                 data['line_style'], k, dev
             )
             if not success:
@@ -321,7 +391,7 @@ class MultiPagePlotManager(QWidget):
                 self.tabs.setCurrentIndex(self.tabs.count()-1)
                 current_page = self.tabs.currentWidget()
                 current_page.add_plot(
-                    data['df'], data['chart_type'], data['title'], 
+                    data['df'], data['chart_type'], data['title'], meta,
                     data['line_style'], k, dev
                 )
         self.tabs.setCurrentIndex(0)

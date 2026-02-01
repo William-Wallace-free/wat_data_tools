@@ -1,9 +1,6 @@
 import sys
 import os
 
-# 1. 屏蔽干扰日志
-# os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.gui.imageio*=false"
-
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                                QLineEdit, QPushButton, QListView, QFrame,
                                QStyle, QAbstractItemView)
@@ -19,6 +16,10 @@ class GlobalMouseFilter(QObject):
         self.popup = popup_widget
 
     def eventFilter(self, obj, event):
+        # 增加安全性检查：如果 popup 已经被销毁（C++对象没了），直接返回
+        if not self.popup or not hasattr(self.popup, 'isVisible'):
+            return False
+
         if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
             if self.popup.isVisible():
                 if isinstance(obj, QWidget):
@@ -29,10 +30,11 @@ class GlobalMouseFilter(QObject):
                     
                     if hasattr(self.popup, 'parent_combo'):
                         combo = self.popup.parent_combo
-                        combo_rect = QRect(combo.mapToGlobal(QPoint(0,0)), combo.size())
-
-                        if not popup_rect.contains(global_pos) and not combo_rect.contains(global_pos):
-                            self.popup.hide()
+                        # 增加安全性检查
+                        if combo and combo.isVisible():
+                            combo_rect = QRect(combo.mapToGlobal(QPoint(0,0)), combo.size())
+                            if not popup_rect.contains(global_pos) and not combo_rect.contains(global_pos):
+                                self.popup.hide()
         return False
 
 # ==========================================
@@ -98,21 +100,32 @@ class CheckableComboBox(QWidget):
         self.popup = PopupListWidget(self)
         self.popup.view.setModel(self.proxy_)
         
+        # [核心修复 1] 缓存 Viewport 引用
+        # 避免在 eventFilter 中频繁访问 self.popup.view.viewport()，防止对象销毁时崩溃
+        self.view_viewport = self.popup.view.viewport()
+        
         self.global_filter = GlobalMouseFilter(self.popup)
         QApplication.instance().installEventFilter(self.global_filter)
         
         self.lineEdit.textEdited.connect(self.on_text_edited)
         self.arrowBtn.clicked.connect(self.toggle_popup)
         
-        self.popup.view.viewport().installEventFilter(self)
+        # 使用缓存的引用安装过滤器
+        self.view_viewport.installEventFilter(self)
         self.lineEdit.installEventFilter(self)
+
+    # [核心修复 2] 增加 closeEvent 清理逻辑
+    def closeEvent(self, event):
+        # 移除全局过滤器，防止组件销毁后它还在后台运行报错
+        if self.global_filter:
+            QApplication.instance().removeEventFilter(self.global_filter)
+        super().closeEvent(event)
 
     def on_text_edited(self, text):
         self.proxy_.setFilterFixedString(text)
         if not self.popup.isVisible():
             self.show_popup()
         if text:
-            # 这里的 emit 是允许的，因为这是用户手动输入触发的
             self.check_all_visible(True)
 
     def show_popup(self):
@@ -144,8 +157,9 @@ class CheckableComboBox(QWidget):
             self.lineEdit.setFocus()
 
     def eventFilter(self, obj, event):
-        # 拦截列表点击 (用户交互 -> 必须 Emit)
-        if obj == self.popup.view.viewport():
+        # [核心修复 3] 使用缓存的 self.view_viewport 进行比较
+        # 这样即使 self.popup 已经开始销毁，这里也不会因为访问 .view 而崩溃
+        if obj == self.view_viewport:
             if event.type() == QEvent.MouseButtonRelease:
                 pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
                 index = self.popup.view.indexAt(pos)
@@ -191,11 +205,8 @@ class CheckableComboBox(QWidget):
         if changed:
             self.itemsChanged.emit(self.get_checked_items())
 
-    # ==========================================
-    # [核心修复 1] 彻底禁止 safe_update_items 发信号
-    # ==========================================
-    def safe_update_items(self, items):
-        self.blockSignals(True) # 强力屏蔽
+    def safe_update_items(self, items, default_state=Qt.Checked):
+        self.blockSignals(True) 
         
         self.proxy_.setSourceModel(None)
         self.proxy_.setFilterFixedString("")
@@ -205,14 +216,13 @@ class CheckableComboBox(QWidget):
         for text in items:
             item = QStandardItem(str(text))
             item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            item.setCheckState(Qt.Checked) 
+            item.setCheckState(default_state) 
             item.setToolTip(str(text))
             self.model_.appendRow(item)
             
         self.proxy_.setSourceModel(self.model_)
         
         self.blockSignals(False)
-        # 绝不 Emit
 
     def get_checked_items(self):
         checked = []
@@ -223,17 +233,11 @@ class CheckableComboBox(QWidget):
         return checked
     
     def clear(self): self.safe_update_items([])
-    def addItems(self, t): self.safe_update_items(t)
+    def addItems(self, t, default_state=Qt.Checked): self.safe_update_items(t, default_state)
     
-    # ==========================================
-    # [核心修复 2] 彻底禁止 set_checked_items 发信号
-    # ==========================================
     def set_checked_items(self, texts, append=False):
-        """外部代码调用此方法时，意味着外部已经知道状态变了，不需要组件再通知回去"""
         target = set(texts)
-        
-        self.blockSignals(True) # 强力屏蔽
-        
+        self.blockSignals(True)
         for i in range(self.model_.rowCount()):
             item = self.model_.item(i)
             txt = item.text()
@@ -241,9 +245,7 @@ class CheckableComboBox(QWidget):
             new_state = Qt.Checked if should_check else Qt.Unchecked
             if item.checkState() != new_state:
                 item.setCheckState(new_state)
-        
         self.blockSignals(False)
-        # 绝不 Emit，彻底切断递归链
             
     def contextMenuEvent(self, event):
         menu = self.lineEdit.createStandardContextMenu()
